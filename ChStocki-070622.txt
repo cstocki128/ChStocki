@@ -1,0 +1,370 @@
+//Programa Gestión Operativa: Challenge Técnico-funcional
+//Se utiliza principalmente pseudocodigo y Python (librerias)
+//Los request y response a la Api de Meli son generados a partir de la documentacion brindada
+//////////////////////////////////////////////////////////////////////////////
+
+
+import json //se importa libreria Json
+import csv //se importa libreria csv
+
+param(in:paramDev, in:tokenAuth, in:orderId, out:responseInfo) //Parametros de entrada y salida
+
+prd = paramPrd //Variable de entorno indicando si es prod (prod = 1 --> Produccion, prod = 0 --> desarrollo) //no se utilizo, ya que se pude obtener informacion a travez de las apis como para mocketearlas correctamente.
+
+//llamadas a subrutinas (llaman a los Sub del mismo nombre)
+
+do "ObtenerInfoOrden" //Inicializa la busqueda de informacion
+
+//Resultado final del Json
+//{
+//	"products": ["string","string"],
+//	"payment": {
+//		"currency": "string"
+//		"totalAmount": value
+//	},
+//	"shipment": {
+//		"logistic": {
+//			"type": "string",
+//			"name": "string" 	
+//		},
+//		"status": "string",
+//		"subStatus": "string",
+//		"origin": "string",
+//		"destination": "string",
+//		"shippingMethod": {
+//			"id": value,
+//			"type": "string",
+//			"name": "string",
+//		}
+//	}
+//	"leadTime": {
+//			"deliveredDay": date,
+//			"deliveredPromisedDay": date,
+//			"deliveredFinalDay": date,
+//			"delay": {
+//				"delayed":boolean,
+//				"date":datetime
+//				}
+//		}
+//}
+
+do "InfoToCsv" //lleva los datos a CSV
+	
+////////////////////////////////////////
+
+//Subrutinas
+
+Sub "InfoToCsv"
+
+	data_file = open('..\CHStocki.csv', 'w', newline='') //Crea archivo csv
+	csv_writer = csv.writer(data_file)
+	 
+	responseInfo
+	count = 0
+	for data in responseInfo
+		if count == 0
+			header = data.keys()
+			csv_writer.writerow(header)
+			count += 1
+			csv_writer.writerow(data.values())
+		EndIf
+	EndFor 
+	data_file.close()
+
+EndSub
+
+Sub "ObtenerInfoOrden" //Subrutina para obtener los datos de la orden
+ 
+	curlTxtOrders = "curl -X GET -H 'Authorization: Bearer "+tokenAuth"+"' https://api.mercadolibre.com/orders/"+orderId //Curl Request Orders API
+	responseOrders = call(curlTxtOrders) //ejecuta la call a la API y guarda el resultado RAW
+	orders = json.loads(responseOrders) //utiliza el metodo "loads" de la libreria json para convertir Json en Python dictionary
+	
+	if orders["error'] = null //Si no hay error
+		
+		//Obtengo datos de la orden
+		totalOrderAmount = orders["total_amount"] //monto total orden (Sin impuestos)
+		OrderAmountcurrency = orders["currency_id"] //moneda monto total orden 
+		
+		responsePaymentInfo["currency"] = OrderAmountcurrency //Agrega al diccionario de pago, el dato "currency" que tendra el valor de moneda de la orden
+		
+		taxesRaw = orders["taxes"] //impuestos
+		taxes = json.loads(taxesRaw)
+		taxesAmount = taxes["amount"] //monto total impuestos
+		taxesAmountCurrency = taxes["currency_id"] // moneda monto total impuestos
+		
+		shippingOrderInfo = json.loads(orders["shipping"]) //Obtengo ID de envio
+		shippingId = shippingOrderInfo["id"]
+		
+		do "ObtenerDatosEnvio" //Llama a subrutina de obtencion de datos de envio
+		responseInfo["shipment"] = responseShipInfo //Agrega al diccionario de salida, el dato "Shipment" que tendra la informacion de envio
+		responseInfo["leadTime"] = responseLeadTimeInfo //Agrega al diccionario de salida, el dato "leadTime" que tendra la informacion de tiempos
+		
+		do 'CalculoMontoTotal' //Llama a subrutina de obtencion de monto total
+		responseInfo["payment"] = responsePaymentInfo //Agrega al diccionario de salida, el dato "Payment" que tendra la informacion de pago
+		
+		do "ObtenerDatoItems" //Llama a subrutina de obtencion de datos de los items
+		responseInfo["products"] = itemList //Agrega al diccionario de salida, el dato "Products" que tendra un listado de productos
+		
+	Else
+		//Error de API....
+	endIf	
+EndSub
+
+Sub "ObtenerDatosEnvio"
+	
+	//Obtiene los datos de envio de la orden
+	curlTxtShipment = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/shipments/+shippingId //Curl Request Shipment API
+	responseShipment = call(curlTxtShipment) //ejecuta la call a la API y guarda el resultado RAW
+	Shipment = json.loads(responseShipment)
+	
+	if Shipment["error"] = null
+		
+		//Obtiene datos de envio
+		
+		//Datos de costo de envio
+		leadTimeRaw = Shipment["lead_time"]
+		leadTimeShip = json.loads(leadTimeRaw)
+		leadTimeShipCost = leadTimeShip["cost"] //Costo Total envio
+		leadTimeShipCurrency = leadTimeShip["currency_id"] //moneda Costo Total envio
+		
+		//Datos de logistica
+		logisticRaw = Shipment["logistic"]
+		logistic = json.loads(logisticRaw)
+		logisticType = logistic["type"]
+		
+		//Se realiza un "case" ya que no se encontro metodo para obtener el descriptivo de la logistica
+		Do case
+			case logisticType = "drop_off"
+				logisticName = "Mercado Envíos"
+			case logisticType = "xd_drop_off"
+				logisticName = "Mercado Envíos Places"
+			case logisticType = "cross_docking"
+				logisticName = "Mercado Envíos Colecta"
+			case logisticType = "self_service"
+				logisticName = "Mercado Envíos Flex"
+			case logisticType = "fulfillment"
+				logisticName = "Mercado Envíos Full"
+			Else
+				logisticName = logisticType
+		EndCase
+		
+		responseShipInfo["logistic"] = {"type":logisticType,"name":logisticName} //Agrega al diccionario de envio, el dato "logistic" que tendra un diccionario con los datos de tipo(id) y nombre de la logistica
+		
+		//Datos de estado y subestado
+		statusShip = Shipment["status"]
+		substatusShip = Shipment["substatus"]
+		
+		responseShipInfo["status"] = statusShip //Agrega al diccionario de envio, el dato "status"
+		responseShipInfo["substatus"] = substatusShip //Agrega al diccionario de envio, el dato "substatus"
+		
+		//Datos de origen
+		if logisticType <> "fulfillment" //Distinto de Mercado Envios Full
+			originShipRaw = Shipment["origin"]
+			originShip = json.loads(originShipRaw)
+			addressShipRaw = originShip["shipping_address"]
+			originShipAdd = json.loads(addressShipRaw)
+			
+			cityShip = json.loads(originShipAdd["city"])
+			stateShip = json.loads(originShipAdd["state"])
+			countryShip = json.loads(originShipAdd["country"])
+			
+			originAddres = originShipAdd["street_name"]+ +toString(originShipAdd["street_number"])+, +cityShip["name"]+, +stateShip["name"]+", "countryShip["name"] //Direccion de origen
+		Else
+			originAddres = "Deposito de Mercado Libre" //Se deja este dato ya que no se encontro metodo para obtener datos del deposito
+		EndIf
+		
+		responseShipInfo["origin"] = originAddres
+		
+		//Datos de destino
+		destinationRaw = Shipment["destination"]
+		destinationShip = json.loads(destinationRaw)
+		destinationShipAdd = json.loads(destinationShip["shipping_address"])
+		agencyShipDest = json.loads(destinationShipAdd["agency"])
+		 
+		if agencyShipDest["carrier_id"] <> 0 //Si existe carrier
+			agencyShipDestcarrierid = agencyShipDest["carrier_id"]
+			agencyShipDestid = agencyShipDest["agency_id"]
+			
+			destinationAddres = "Agency ID: "+agencyShipDestcarrierid+", Carrier ID: "+agencyShipDestid //No se especifica formato asi que se deja en un descriptivo.
+			
+		Else //Sino se deja la direccion completa
+		
+			cityShip = json.loads(destinationShipAdd["city"])
+			stateShip = json.loads(destinationShipAdd["state"])
+			countryShip = json.loads(destinationShipAdd["country"])
+			
+			destinationAddres = destinationShipAdd["street_name"]+ +toString(destinationShipAdd["street_number"])+, +cityShip["name"]+, +stateShip["name"]+", "countryShip["name"] //Direccion de destino
+			
+		EndIf
+		 
+		responseShipInfo["destination"] = destinationAddres //Agrega al diccionario de envio, el dato "destination"
+		
+		
+		//Datos de proveedor
+		methodShip = json.loads(leadTimeShip["shipping_method"]) //Dato tomado mas arriba
+		responseShipInfo["shippingMethod"] = methodShip  //Agrega al diccionario de envio, el dato "shippingMethod" directamente del nodo
+		
+		//Datos de dias y horarios
+		do "ObtenerDatosTiempos"
+		
+	Else
+		//MENSAJE DE ERROR...
+	EndIf
+EndSub
+
+Sub "ObtenerDatosTiempos"
+	do "ObtenerHistorial"
+	
+	curlTxtleadTime = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/shipments/"+shippingId+"/lead_time" //Curl Request lead_time API
+	responseleadTime = call(curlTxtleadTime) //ejecuta la call a la API y guarda el resultado RAW
+	leadTime = json.loads(responseleadTime)
+	if leadTime["error"] = null
+		
+		deliveryTimeSt = json.loads(leadTime["estimated_delivery_time"])
+		deliveryTimeStDate = deliveryTimeSt["date"]
+		
+		deliveryTimefinal = json.loads(leadTime["estimated_delivery_final"])
+		deliveryTimefinalDate = deliveryTimefinal["date"]
+		
+		responseLeadTimeInfo["deliveredPromisedDay"] = deliveryTimeStDate //Agrega al diccionario de tiempos, el dato "deliveryTimeStDate" que contiene el dato de dia estimado de entrega
+		responseLeadTimeInfo["deliveredFinalDay"] = deliveryTimefinalDate //Agrega al diccionario de tiempos, el dato "deliveryTimefinalDate" que contiene el dato del dia limite de entrega
+		
+	Else
+		//Error...
+	EndIf
+	
+	//Obtener datos de delay
+	curlTxtdelay = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/shipments/"+shippingId+"/delays"
+	responseDelay = call(curlTxtdelay) //ejecuta la call a la API y guarda el resultado RAW
+	delay = json.loads(responseDelay)
+	if delay["error"] = null
+		delayed = true //Campo boolean que dice si esta atrasado o no...
+		delayInfo = delay["delays"]
+		delaydate = delayInfo["Date"]
+	Else
+		delayed = false
+		delaydate = null
+	EndIf
+	
+	responseLeadTimeInfo["delay"] = {"delayed":delayed,"date":delaydate} //Agrega al diccionario de tiempos, el dato "delay" que contiene un diccionario con los datos delay (boolena) y el retraso
+	
+EndSub
+
+Sub "ObtenerDatoItem"
+
+	//Obtiene los items de la orden
+	orderItems = json.loads(orders["order_items"])
+	
+	for itemJson in orderItems["item"] //Recorre cada item
+		item = json.loads(itemJson)
+		itemId = item["id"] //Obtiene ID de item
+		variationId = item[variation_id] //Obtiene variation ID de item
+		itemTitle = item["title"] //Obtiene titulo del item
+		
+		if variationId <> null
+			do 'BuscaVariaciones' //Llama a subrutina para busqueda datos de variacion de producto
+		EndIf
+		
+		if RespAtt <> null //Si hay variacion entonces concatena al titulo del item
+			itemName = itemTitle+ +RespAtt
+		Else	
+			itemName = itemTitle
+		EndIf
+		
+		itemList.append(itemName)  //Lista de items
+		
+	EndFor
+	
+	
+EndSub
+ 
+Sub 'BuscaVariaciones'
+	
+	curlTxtVariation = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/items/"+itemId+"/variations/"+variationId //Curl Request Variations API
+	responseVariation = call(curlTxtVariation) //ejecuta la call a la API y guarda el resultado RAW
+	variation = json.loads(responseVariation) //utiliza el metodo "loads" de la libreria json para convertir Json en Python dictionary
+	
+	if variation["error'] = null //Si no hay error
+		attributesRaw = variation["attribute_combinations"]
+		attributes = json.loads(attributesRaw) //Obtengo atributos
+		RespAtt = null //Vacio variable
+		i=1
+		for att in attributes //Por cada atributo
+			
+			if i > 1 //condicion para agregar separador de variaciones
+				RespAtt += " - "	
+			EndiF
+			
+			RespAtt += att["name"]+" "+att["value_name"]  //Se van concatenando las variaciones
+			
+			i=++i
+			
+		EndFor
+	endIf
+EndSub
+
+Sub "CalculoMontoTotal"
+
+	if OrderAmountcurrencyId <> taxesAmountCurrency //Si la moneda del monto total y la moneda de los impuestos son diferentes entonces se calcula
+		
+		currency1 = OrderAmountcurrency //Moneda a la que se convertira
+		currency2 = taxesAmountCurrency //Moneda origen
+		do 'RatioMoneda'
+		
+		if ratio <> 1 //Si el ratio es distinto de uno entonces se calcula
+			taxesAmount = taxesAmount * ratio
+		EndIf
+		
+	EndIf
+	
+	if OrderAmountcurrencyId <> leadTimeShipCurrency //Si la moneda del monto total y la moneda de los impuestos son diferentes entonces se calcula
+		
+		currency1 = OrderAmountcurrency //Moneda a la que se convertira
+		currency2 = leadTimeShipCurrency //Moneda origen
+		do 'RatioMoneda'
+		
+		if ratio <> 1 //Si el ratio es distinto de uno entonces se calcula
+			leadTimeShipCost = leadTimeShipCost * ratio
+		EndIf
+		
+	EndIf
+	
+	totalGeneralAmount = totalOrderAmount + taxesAmount + leadTimeShipCost
+	
+	responsePaymentInfo["totalAmount"] = totalGeneralAmount //Agrega al diccionario de pago, el dato "TotalAmount" que tendra el valor total pedido
+		
+EndSub
+
+Sub "RatioMoneda"
+
+	curlTxtCurrency = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/currency_conversions/search?from="+currency2+"&to="+currency1 //Curl Request Currency API
+	responseCurrency = call(curlTxtCurrency) //ejecuta la call a la API y guarda el resultado RAW
+	currency = json.loads(responseCurrency)
+	if currency["error"] = null
+		ratio = Currency["ratio"]
+	Else
+		//ERROR....
+	EndIf
+EndSub
+
+Sub "ObtenerHistorial"
+	curlTxtHistory = "curl -X GET -H 'Authorization: Bearer "+tokenAuth+"' https://api.mercadolibre.com/shipments/"+shippingId+"/history" //Curl Request History API
+	responseHistory = call(curlTxtHistory) //ejecuta la call a la API y guarda el resultado RAW
+	history = json.loads(responseHistory)
+	if history["error"] = null
+		
+		deliveredDay = null //Inicializa variable
+		For historyItem in history //Revisa en cada item del historial si esta entregado o no (No se encontro otra forma, al menos en la documentacion... de obtener la fecha de entrega)
+			historyStatus = historyItem["status"]
+			if historyStatus = "delivered" //Entregado
+				deliveredDay = historyStatus["date"]
+				exit //Sale del FOR
+			EndIf
+		EndFor
+		
+		responseLeadTimeInfo["deliveredDay"] = deliveredDay //Agrega al diccionario de Tiempos, el dato "deliveredDay" que tendra el valor del dia de entrega (Si no se entrego sera nulo)
+		
+	Else
+		//ERROR....
+	EndIf
+EndSub
